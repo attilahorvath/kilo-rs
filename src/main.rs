@@ -12,6 +12,10 @@ fn main() {
     };
 
     if let Err(e) = kilo.run() {
+        if let Err(f) = clear_screen() {
+            eprintln!("Unable to clear screen: {}", f);
+        }
+
         eprintln!("Error encountered while running Kilo: {}", e);
     }
 }
