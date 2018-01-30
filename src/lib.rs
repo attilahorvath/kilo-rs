@@ -49,13 +49,13 @@ struct Row {
 
 pub struct Kilo {
     stdin_fd: RawFd,
-    cx: u16,
-    cy: u16,
-    rx: u16,
-    rowoff: u16,
-    coloff: u16,
-    screenrows: u16,
-    screencols: u16,
+    cx: usize,
+    cy: usize,
+    rx: usize,
+    rowoff: usize,
+    coloff: usize,
+    screenrows: usize,
+    screencols: usize,
     rows: Vec<Row>,
     filename: String,
     statusmsg: String,
@@ -177,7 +177,7 @@ impl Kilo {
         }
     }
 
-    fn get_cursor_position(&self) -> io::Result<(u16, u16)> {
+    fn get_cursor_position(&self) -> io::Result<(usize, usize)> {
         io::stdout().write("\x1b[6n".as_bytes())?;
         io::stdout().flush()?;
 
@@ -201,7 +201,7 @@ impl Kilo {
         Ok((rows, cols))
     }
 
-    fn get_window_size(&self) -> io::Result<(u16, u16)> {
+    fn get_window_size(&self) -> io::Result<(usize, usize)> {
         unsafe {
             let ws: winsize = std::mem::uninitialized();
 
@@ -211,17 +211,17 @@ impl Kilo {
 
                 self.get_cursor_position()
             } else {
-                Ok((ws.ws_row as u16, ws.ws_col as u16))
+                Ok((ws.ws_row as usize, ws.ws_col as usize))
             }
         }
     }
 
-    fn editor_row_cx_to_rx(&self, row: &Row, cx: u16) -> u16 {
+    fn editor_row_cx_to_rx(&self, row: &Row, cx: usize) -> usize {
         let mut rx = 0;
 
         for j in 0..cx {
-            if let Some('\t') = row.chars.chars().nth(j as usize) {
-                rx += (KILO_TAB_STOP as u16 - 1) - (rx % KILO_TAB_STOP as u16);
+            if let Some('\t') = row.chars.chars().nth(j) {
+                rx += (KILO_TAB_STOP - 1) - (rx % KILO_TAB_STOP);
             }
             rx += 1;
         }
@@ -260,8 +260,8 @@ impl Kilo {
     fn editor_scroll(&mut self) {
         self.rx = 0;
 
-        if self.cy < self.rows.len() as u16 {
-            self.rx = self.editor_row_cx_to_rx(&self.rows[self.cy as usize], self.cx);
+        if self.cy < self.rows.len() {
+            self.rx = self.editor_row_cx_to_rx(&self.rows[self.cy], self.cx);
         }
 
         if self.cy < self.rowoff {
@@ -284,16 +284,16 @@ impl Kilo {
     fn editor_draw_rows(&self, buffer: &mut String) {
         for y in 0..self.screenrows {
             let filerow = y + self.rowoff;
-            if filerow >= self.rows.len() as u16 {
+            if filerow >= self.rows.len() {
                 if self.rows.is_empty() && y == self.screenrows / 3 {
                     let mut welcome = match KILO_VERSION {
                         Some(version) => format!("Kilo editor -- version {}", version),
                         None => "Kilo editor".to_string(),
                     };
 
-                    welcome.truncate(self.screencols as usize);
+                    welcome.truncate(self.screencols);
 
-                    let mut padding = (self.screencols - welcome.len() as u16) / 2;
+                    let mut padding = (self.screencols - welcome.len()) / 2;
 
                     if padding > 0 {
                         buffer.push('~');
@@ -309,18 +309,13 @@ impl Kilo {
                     buffer.push('~');
                 }
             } else {
-                let line = &self.rows[filerow as usize].render;
-                let mut len = line.len() as i16 - self.coloff as i16;
-                if len < 0 {
-                    len = 0;
-                }
-                if len > self.screencols as i16 {
-                    len = self.screencols as i16;
+                let line = &self.rows[filerow].render;
+                let mut len = line.len().saturating_sub(self.coloff);
+                if len > self.screencols {
+                    len = self.screencols;
                 }
                 if len > 0 {
-                    buffer.push_str(
-                        &line[(self.coloff as usize)..(self.coloff as usize + len as usize)],
-                    );
+                    buffer.push_str(&line[(self.coloff)..(self.coloff + len)]);
                 }
             }
 
@@ -332,12 +327,12 @@ impl Kilo {
     fn editor_draw_status_bar(&self, buffer: &mut String) {
         buffer.push_str("\x1b[7m");
         let mut status = format!("{:.20} - {} lines", self.filename, self.rows.len());
-        status.truncate(self.screencols as usize);
+        status.truncate(self.screencols);
         let rstatus = format!("{}/{}", self.cy + 1, self.rows.len());
         let mut len = status.len();
         buffer.push_str(&status);
-        while len < self.screencols as usize {
-            if self.screencols as usize - len == rstatus.len() {
+        while len < self.screencols {
+            if self.screencols - len == rstatus.len() {
                 buffer.push_str(&rstatus);
                 break;
             } else {
@@ -351,7 +346,7 @@ impl Kilo {
 
     fn editor_draw_message_bar(&mut self, buffer: &mut String) {
         buffer.push_str("\x1b[K");
-        self.statusmsg.truncate(self.screencols as usize);
+        self.statusmsg.truncate(self.screencols);
         if self.statusmsg_time.elapsed() < Duration::from_secs(5) {
             buffer.push_str(&self.statusmsg);
         }
@@ -388,7 +383,7 @@ impl Kilo {
     }
 
     fn editor_move_cursor(&mut self, key: EditorKey) {
-        let row = self.rows.get(self.cy as usize);
+        let row = self.rows.get(self.cy);
 
         match key {
             ArrowLeft => {
@@ -396,14 +391,14 @@ impl Kilo {
                     self.cx -= 1;
                 } else if self.cy > 0 {
                     self.cy -= 1;
-                    self.cx = self.rows[self.cy as usize].chars.len() as u16;
+                    self.cx = self.rows[self.cy].chars.len();
                 }
             }
             ArrowRight => {
                 if let Some(r) = row {
-                    if self.cx < r.chars.len() as u16 {
+                    if self.cx < r.chars.len() {
                         self.cx += 1;
-                    } else if self.cx == r.chars.len() as u16 {
+                    } else if self.cx == r.chars.len() {
                         self.cy += 1;
                         self.cx = 0;
                     }
@@ -415,19 +410,15 @@ impl Kilo {
                 }
             }
             ArrowDown => {
-                if self.cy < self.rows.len() as u16 {
+                if self.cy < self.rows.len() {
                     self.cy += 1;
                 }
             }
             _ => {}
         }
 
-        let row = self.rows.get(self.cy as usize);
-        let rowlen = if let Some(r) = row {
-            r.chars.len() as u16
-        } else {
-            0
-        };
+        let row = self.rows.get(self.cy);
+        let rowlen = if let Some(r) = row { r.chars.len() } else { 0 };
 
         if self.cx > rowlen {
             self.cx = rowlen;
@@ -441,8 +432,8 @@ impl Kilo {
             Char(c) if c == ctrl_key('q') => return Ok(false),
             HomeKey => self.cx = 0,
             EndKey => {
-                if self.cy < self.rows.len() as u16 {
-                    self.cx = self.rows[self.cy as usize].chars.len() as u16;
+                if self.cy < self.rows.len() {
+                    self.cx = self.rows[self.cy].chars.len();
                 }
             }
             PageUp | PageDown => {
@@ -450,8 +441,8 @@ impl Kilo {
                     self.cy = self.rowoff;
                 } else if c == PageDown {
                     self.cy = self.rowoff + self.screenrows - 1;
-                    if self.cy > self.rows.len() as u16 {
-                        self.cy = self.rows.len() as u16;
+                    if self.cy > self.rows.len() {
+                        self.cy = self.rows.len();
                     }
                 }
                 for _ in 0..self.screenrows {
