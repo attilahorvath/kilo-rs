@@ -1,12 +1,13 @@
 extern crate libc;
 extern crate termios;
 
-use std::os::unix::io::{AsRawFd, RawFd};
+use std::char;
+use std::fs::File;
 use std::io;
 use std::io::prelude::*;
 use std::io::{BufReader, ErrorKind};
-use std::fs::File;
-use std::char;
+use std::os::unix::io::{AsRawFd, RawFd};
+use std::time::{Duration, Instant};
 
 use libc::{TIOCGWINSZ, ioctl, winsize};
 use termios::*;
@@ -56,6 +57,9 @@ pub struct Kilo {
     screenrows: u16,
     screencols: u16,
     rows: Vec<Row>,
+    filename: String,
+    statusmsg: String,
+    statusmsg_time: Instant,
     orig_termios: Termios,
 }
 
@@ -84,6 +88,9 @@ impl Kilo {
             screenrows: 0,
             screencols: 0,
             rows: Vec::new(),
+            filename: String::new(),
+            statusmsg: String::new(),
+            statusmsg_time: Instant::now(),
             orig_termios,
         })
     }
@@ -238,6 +245,8 @@ impl Kilo {
     }
 
     fn editor_open(&mut self, filename: &str) -> io::Result<()> {
+        self.filename = filename.to_string();
+
         let file = File::open(filename)?;
         let reader = BufReader::new(file);
 
@@ -272,7 +281,7 @@ impl Kilo {
         }
     }
 
-    fn editor_draw_rows(&self, buffer: &mut String) -> io::Result<()> {
+    fn editor_draw_rows(&self, buffer: &mut String) {
         for y in 0..self.screenrows {
             let filerow = y + self.rowoff;
             if filerow >= self.rows.len() as u16 {
@@ -316,12 +325,36 @@ impl Kilo {
             }
 
             buffer.push_str("\x1b[K");
-            if y < self.screenrows - 1 {
-                buffer.push_str("\r\n");
+            buffer.push_str("\r\n");
+        }
+    }
+
+    fn editor_draw_status_bar(&self, buffer: &mut String) {
+        buffer.push_str("\x1b[7m");
+        let mut status = format!("{:.20} - {} lines", self.filename, self.rows.len());
+        status.truncate(self.screencols as usize);
+        let rstatus = format!("{}/{}", self.cy + 1, self.rows.len());
+        let mut len = status.len();
+        buffer.push_str(&status);
+        while len < self.screencols as usize {
+            if self.screencols as usize - len == rstatus.len() {
+                buffer.push_str(&rstatus);
+                break;
+            } else {
+                buffer.push_str(" ");
+                len += 1;
             }
         }
+        buffer.push_str("\x1b[m");
+        buffer.push_str("\r\n");
+    }
 
-        Ok(())
+    fn editor_draw_message_bar(&mut self, buffer: &mut String) {
+        buffer.push_str("\x1b[K");
+        self.statusmsg.truncate(self.screencols as usize);
+        if self.statusmsg_time.elapsed() < Duration::from_secs(5) {
+            buffer.push_str(&self.statusmsg);
+        }
     }
 
     fn editor_refresh_screen(&mut self) -> io::Result<()> {
@@ -332,7 +365,9 @@ impl Kilo {
         buffer.push_str("\x1b[?25l");
         buffer.push_str("\x1b[H");
 
-        self.editor_draw_rows(&mut buffer)?;
+        self.editor_draw_rows(&mut buffer);
+        self.editor_draw_status_bar(&mut buffer);
+        self.editor_draw_message_bar(&mut buffer);
 
         buffer.push_str(&format!(
             "\x1b[{};{}H",
@@ -345,6 +380,11 @@ impl Kilo {
         io::stdout().flush()?;
 
         Ok(())
+    }
+
+    fn editor_set_status_message(&mut self, message: &str) {
+        self.statusmsg = message.to_string();
+        self.statusmsg_time = Instant::now();
     }
 
     fn editor_move_cursor(&mut self, key: EditorKey) {
@@ -428,7 +468,7 @@ impl Kilo {
     fn init_editor(&mut self) -> io::Result<()> {
         let (screenrows, screencols) = self.get_window_size()?;
 
-        self.screenrows = screenrows;
+        self.screenrows = screenrows - 2;
         self.screencols = screencols;
 
         Ok(())
@@ -444,6 +484,8 @@ impl Kilo {
         if let Some(filename) = argv.next() {
             self.editor_open(&filename)?;
         }
+
+        self.editor_set_status_message("HELP: Ctrl-Q = quit");
 
         loop {
             self.editor_refresh_screen()?;
